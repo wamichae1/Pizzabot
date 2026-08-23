@@ -1,0 +1,23 @@
+{
+  "target_account_pool": 3,
+  "promo_check_frequency_days": 1,
+  "base_profile": {
+    "first_name": "Jordan",
+    "last_name": "Smith",
+    "birthday": "1998-04-12",
+    "area_code": "905",
+    "phone": "",
+    "base_email": "youraccount@gmail.com"
+  },
+  "imap": {
+    "host": "imap.gmail.com",
+    "username": "youraccount@gmail.com",
+    "password": "your_gmail_app_password",
+    "mailbox": "INBOX"
+  },
+  "browser": {
+    "headless": false,
+    "slow_mo_ms": 300
+  },
+  "selectors": {}
+}

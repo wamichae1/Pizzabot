@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+pizzabot.db
+config.json
+*.screenshot.png

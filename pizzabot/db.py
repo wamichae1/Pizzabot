@@ -21,10 +21,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     verified_at TEXT,
     check_promotions INTEGER NOT NULL DEFAULT 1,
     last_promo_checked_at TEXT,
+    last_action TEXT,
     promotion_name TEXT,
     promotion_status TEXT,
     promotion_expiry TEXT,
-    promotion_used INTEGER NOT NULL DEFAULT 0
+    promotion_used INTEGER NOT NULL DEFAULT 0,
+    promotion_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS alias_tracker (
@@ -43,6 +45,19 @@ def connect(db_path: Path | str = "pizzabot.db") -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _add_column_if_missing(conn, "accounts", "last_action", "TEXT")
+    _add_column_if_missing(
+        conn, "accounts", "promotion_count", "INTEGER NOT NULL DEFAULT 0"
+    )
+    # Older databases recorded only the first offer name. Preserve a useful
+    # count for rows created before promotion_count existed.
+    conn.execute(
+        """
+        UPDATE accounts
+        SET promotion_count = 1
+        WHERE promotion_name IS NOT NULL AND promotion_count = 0
+        """
+    )
     conn.execute(
         """
         INSERT OR IGNORE INTO alias_tracker (alias_number, email)
@@ -51,6 +66,14 @@ def connect(db_path: Path | str = "pizzabot.db") -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def next_alias_id(conn: sqlite3.Connection) -> int:
@@ -92,8 +115,8 @@ def upsert_account(conn: sqlite3.Connection, account: dict[str, Any]) -> int:
         """
         INSERT INTO accounts (
             id, email, first_name, last_name, birthday, phone, status,
-            created_at, check_promotions
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, check_promotions, last_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account["id"],
@@ -105,6 +128,7 @@ def upsert_account(conn: sqlite3.Connection, account: dict[str, Any]) -> int:
             account.get("status", "created"),
             account.get("created_at") or utc_now_iso(),
             int(account.get("check_promotions", True)),
+            account.get("last_action"),
         ),
     )
     conn.commit()
@@ -162,6 +186,21 @@ def mark_status(conn: sqlite3.Connection, account_id: int, status: str) -> None:
     conn.commit()
 
 
+def mark_action(conn: sqlite3.Connection, account_id: int, action: str) -> None:
+    """Record the latest non-sensitive flow stage for the stats dashboard."""
+    conn.execute(
+        "UPDATE accounts SET last_action = ? WHERE id = ?",
+        (action, account_id),
+    )
+    conn.commit()
+
+
+def mark_error(conn: sqlite3.Connection, account_id: int, error: Exception | str) -> None:
+    """Store a concise error description without changing account status."""
+    message = str(error).replace("\r", " ").replace("\n", " ")
+    mark_action(conn, account_id, f"error: {message[:200]}")
+
+
 def mark_promo(
     conn: sqlite3.Connection,
     account_id: int,
@@ -170,7 +209,10 @@ def mark_promo(
     status: str | None = "active",
     expiry: str | None = None,
     used: bool = False,
+    count: int | None = None,
 ) -> None:
+    if count is None:
+        count = 1 if name else 0
     conn.execute(
         """
         UPDATE accounts
@@ -178,10 +220,19 @@ def mark_promo(
             promotion_status = ?,
             promotion_expiry = ?,
             promotion_used = ?,
-            last_promo_checked_at = ?
+            last_promo_checked_at = ?,
+            promotion_count = ?
         WHERE id = ?
         """,
-        (name, status, expiry, int(used), utc_now_iso(), account_id),
+        (
+            name,
+            status,
+            expiry,
+            int(used),
+            utc_now_iso(),
+            int(count),
+            account_id,
+        ),
     )
     conn.commit()
 

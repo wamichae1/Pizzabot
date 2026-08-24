@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -60,6 +61,70 @@ def _split_ids(raw: str) -> list[int] | None:
     if not raw.strip():
         return None
     return [int(x) for x in raw.split(",") if x.strip()]
+
+
+def _format_db_time(value: str | None) -> str:
+    if not value:
+        return "--"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return value
+
+
+def _format_created_verified(row) -> str:
+    created = _format_db_time(row["created_at"])
+    verified = _format_db_time(row["verified_at"])
+    try:
+        same_day = (
+            row["created_at"]
+            and row["verified_at"]
+            and _format_db_time(row["created_at"])[:5]
+            == _format_db_time(row["verified_at"])[:5]
+        )
+        if same_day:
+            verified_time = datetime.fromisoformat(
+                row["verified_at"].replace("Z", "+00:00")
+            )
+            if verified_time.tzinfo is not None:
+                verified_time = verified_time.astimezone()
+            verified = verified_time.strftime("%H:%M")
+    except (TypeError, ValueError):
+        pass
+    return f"{created} / {verified}"
+
+
+def _display_action(action: str | None) -> str:
+    if not action:
+        return "Unknown"
+    if action.lower().startswith("error:"):
+        return "Error: " + action[6:].strip()
+    labels = {
+        "created": "Alias allocated",
+        "login": "Login submitted",
+        "waiting_for_verification": "Waiting for email",
+        "verification_received": "Verification received",
+        "complete_profile": "Complete profile",
+        "first_name": "First name filled",
+        "last_name": "Last name filled",
+        "phone": "Phone filled",
+        "birthday": "Birthday filled",
+        "terms": "Terms checked",
+        "account_created": "Account created",
+        "promo_login": "Promo login",
+        "hut_rewards": "Hut Rewards",
+        "promo_checked": "Promo checked",
+        "manual_review": "Manual review",
+    }
+    return labels.get(action, action.replace("_", " ").title())
+
+
+def _truncate(value: object, width: int) -> str:
+    text = "" if value is None else str(value)
+    return text if len(text) <= width else text[: max(1, width - 3)] + "..."
 
 
 def _browser_config(cfg: dict, headless_flag: bool) -> dict:
@@ -121,13 +186,16 @@ def cmd_create(args: argparse.Namespace) -> int:
                     "birthday": profile["birthday"],
                     "phone": signup_profile["phone"],
                     "status": "created",
+                    "last_action": "created",
                 },
             )
             try:
+                db_mod.mark_action(conn, alias_id, "login")
                 pizzahut.login_with_email(
                     session, email, selectors, flow="create", stage="login"
                 )
                 print("    Waiting for verification email ...")
+                db_mod.mark_action(conn, alias_id, "waiting_for_verification")
                 link = pizzahut.wait_for_verification_email(
                     imap,
                     email,
@@ -135,15 +203,25 @@ def cmd_create(args: argparse.Namespace) -> int:
                 )
                 if link is None:
                     raise pizzahut.PizzahutError("No verification email received")
+                db_mod.mark_action(conn, alias_id, "verification_received")
                 print("    Opening verification login link ...")
                 pizzahut.open_verification_login_link(session, link, selectors)
-                pizzahut.complete_profile(session, signup_profile, selectors)
+                pizzahut.complete_profile(
+                    session,
+                    signup_profile,
+                    selectors,
+                    report_stage=lambda stage: db_mod.mark_action(conn, alias_id, stage),
+                )
                 db_mod.mark_verified(conn, alias_id)
                 print(f"    Account created and verified for {email}.")
             except pizzahut.PizzahutError as exc:
                 print(f"    Error: {exc}")
+                db_mod.mark_error(conn, alias_id, exc)
                 db_mod.mark_status(conn, alias_id, "manual_review")
                 print(f"    Marked {email} as manual_review.")
+            except Exception as exc:
+                db_mod.mark_error(conn, alias_id, exc)
+                raise
     conn.close()
     return 0
 
@@ -182,24 +260,40 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 "phone": row["phone"],
             }
             print(f"Verifying {email} ...")
+            db_mod.mark_action(conn, row["id"], "login")
             pizzahut.login_with_email(
                 session, email, selectors, flow="verify", stage="login"
             )
+            db_mod.mark_action(conn, row["id"], "waiting_for_verification")
             link = pizzahut.wait_for_verification_email(
                 imap, email, timeout_seconds=args.timeout
             )
             if not link:
                 print(f"  No verification email received for {email}; leaving status unchanged.")
                 continue
+            db_mod.mark_action(conn, row["id"], "verification_received")
             pizzahut.open_verification_login_link(session, link, selectors)
             current_url = session.page.url
             if "/complete-profile" in current_url:
-                pizzahut.complete_profile(session, profile_for_verify, selectors)
+                pizzahut.complete_profile(
+                    session,
+                    profile_for_verify,
+                    selectors,
+                    report_stage=lambda stage, account_id=row["id"]: db_mod.mark_action(
+                        conn, account_id, stage
+                    ),
+                )
             elif "/order/deals" not in current_url:
                 print(f"  Unexpected landing URL: {current_url}; marking manual_review.")
+                db_mod.mark_error(
+                    conn,
+                    row["id"],
+                    f"Unexpected landing URL after verification: {current_url}",
+                )
                 db_mod.mark_status(conn, row["id"], "manual_review")
                 continue
             db_mod.mark_verified(conn, row["id"])
+            db_mod.mark_action(conn, row["id"], "account_created")
             print(f"  Marked {email} as verified.")
     conn.close()
     return 0
@@ -229,16 +323,20 @@ def cmd_check_promos(args: argparse.Namespace) -> int:
         for row in accounts:
             email = row["email"]
             print(f"Checking promotions for {email} ...")
+            db_mod.mark_action(conn, row["id"], "promo_login")
             pizzahut.login_with_email(
                 session, email, selectors, flow="promo", stage="login"
             )
+            db_mod.mark_action(conn, row["id"], "waiting_for_verification")
             link = pizzahut.wait_for_verification_email(
                 imap, email, timeout_seconds=args.timeout
             )
             if not link:
                 print(f"  No sign-in link received for {email}; skipping promo check.")
                 continue
+            db_mod.mark_action(conn, row["id"], "verification_received")
             pizzahut.open_verification_login_link(session, link, selectors)
+            db_mod.mark_action(conn, row["id"], "hut_rewards")
             offers = pizzahut.check_promotion(session, selectors)
             if offers:
                 offer = offers[0]
@@ -248,12 +346,15 @@ def cmd_check_promos(args: argparse.Namespace) -> int:
                     name=offer["name"],
                     status=offer["status"],
                     expiry=offer["expiry"],
+                    count=len(offers),
                 )
                 print(f"  Found {len(offers)} limited-time offer(s):")
                 for item in offers:
                     print(f"    {item['name']} ({item['expiry']})")
+                db_mod.mark_action(conn, row["id"], "promo_checked")
             else:
                 db_mod.mark_promo(conn, row["id"], name=None, status=None, expiry=None)
+                db_mod.mark_action(conn, row["id"], "promo_checked")
                 print(f"  No limited-time offers detected for {email} (valid result).")
     conn.close()
     return 0
@@ -280,11 +381,51 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
     statuses = Counter(a["status"] for a in all_accounts)
     used = sum(1 for a in all_accounts if a["promotion_used"])
-    print(f"Total accounts: {len(all_accounts)}")
-    print(f"Active (verified & promo unused): {db_mod.count_active(conn)}")
-    print(f"Promotion used: {used}")
-    for status, count in sorted(statuses.items()):
-        print(f"  {status}: {count}")
+
+    summary_parts = [
+        f"Total: {len(all_accounts)}",
+        f"Active: {db_mod.count_active(conn)}",
+        f"Verified: {statuses.get('verified', 0)}",
+        f"Manual Review: {statuses.get('manual_review', 0)}",
+        f"Promo Used: {used}",
+    ]
+    other_statuses = sorted(
+        (status, count)
+        for status, count in statuses.items()
+        if status not in {"verified", "manual_review"}
+    )
+    for status, count in other_statuses:
+        summary_parts.append(f"{status}: {count}")
+
+    print("PizzaBot Account Status")
+    print("-" * 100)
+    print(" | ".join(summary_parts))
+    print("-" * 100)
+    print(
+        f"{'ID':>2} {'EMAIL':<28} {'STATUS':<13} "
+        f"{'LAST ACTION':<22} {'PROMOS':>6}  {'LAST CHECK':<11} "
+        f"{'CREATED / VERIFIED':<20}"
+    )
+    for row in all_accounts:
+        checked = bool(row["last_promo_checked_at"])
+        promos = str(row["promotion_count"]) if checked else "-"
+        last_check = _format_db_time(row["last_promo_checked_at"]) if checked else "-"
+        action = _display_action(row["last_action"])
+        if row["last_action"] is None:
+            if row["status"] == "manual_review":
+                action = "Manual review"
+            elif row["status"] == "verified":
+                action = "Promo checked" if row["last_promo_checked_at"] else "Account created"
+            elif row["status"] == "created":
+                action = "Alias allocated"
+        if row["last_action"] == "promo_checked" and row["promotion_status"]:
+            action = f"{action} ({row['promotion_status']})"
+        print(
+            f"{row['id']:>2} {_truncate(row['email'], 28):<28} "
+            f"{_truncate(row['status'], 13):<13} {_truncate(action, 22):<22} "
+            f"{promos:>6}  {last_check:<11} "
+            f"{_truncate(_format_created_verified(row), 20):<20}"
+        )
     conn.close()
     return 0
 

@@ -1,5 +1,30 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
 pizzabot.db
+*.db-journal
+*.db-wal
+*.db-shm
 config.json
+config.local.json
+.env
+.env.*
+!.env.example
+
 *.screenshot.png
+screenshots/
+logs/
+*.log
+
+# Local debugging artifacts
+debug_*.py
+debug_*.json
+debug_*.html
+
+# Local coding-agent context
+AGENTS.md

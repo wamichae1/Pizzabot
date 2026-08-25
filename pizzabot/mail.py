@@ -63,7 +63,9 @@ def _fetch_latest_matching(conn: imaplib.IMAP4, to_email: str, limit: int = 50) 
         typ, data = conn.search(None, f'(TO "{to_email}")')
         if typ == "OK":
             ids = data[0].split()
-            for num in ids[-limit:]:
+            # IMAP IDs are returned in ascending order; iterate from newest to
+            # oldest so poll_for_link() prefers the most recent matching email.
+            for num in reversed(ids[-limit:]):
                 typ, msg_data = conn.fetch(num, "(RFC822)")
                 if typ == "OK" and msg_data and isinstance(msg_data[0], tuple):
                     messages.append(email.message_from_bytes(msg_data[0][1]))
@@ -76,7 +78,7 @@ def _fetch_latest_matching(conn: imaplib.IMAP4, to_email: str, limit: int = 50) 
     try:
         typ, data = conn.search(None, "ALL")
         if typ == "OK":
-            ids = data[0].split()[-limit:]
+            ids = reversed(data[0].split()[-limit:])
             for num in ids:
                 typ, msg_data = conn.fetch(num, "(RFC822)")
                 if typ != "OK" or not msg_data:

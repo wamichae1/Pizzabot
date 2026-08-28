@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS accounts (
     promotion_count INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS promotions (
+    account_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT,
+    expiry TEXT,
+    PRIMARY KEY (account_id, position),
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS alias_tracker (
     alias_number INTEGER PRIMARY KEY,
     email TEXT UNIQUE NOT NULL
@@ -59,6 +69,17 @@ def connect(db_path: Path | str = "pizzabot.db") -> sqlite3.Connection:
         UPDATE accounts
         SET promotion_count = 1
         WHERE promotion_name IS NOT NULL AND promotion_count = 0
+        """
+    )
+    # Backfill the first stored offer from older account rows into the new
+    # detailed promotions table. This preserves existing promo results for the
+    # new `promos` command without requiring a fresh live promotion check.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO promotions (account_id, position, name, status, expiry)
+        SELECT id, 0, promotion_name, promotion_status, promotion_expiry
+        FROM accounts
+        WHERE promotion_name IS NOT NULL
         """
     )
     conn.execute(
@@ -192,6 +213,82 @@ def get_promo_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(rows)
 
 
+def _offers_from_promo_args(
+    *,
+    name: str | None,
+    status: str | None,
+    expiry: str | None,
+    offers: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if offers is not None:
+        return list(offers)
+    if not name:
+        return []
+    return [{"name": name, "status": status or "active", "expiry": expiry}]
+
+
+def replace_promotions(
+    conn: sqlite3.Connection,
+    account_id: int,
+    offers: list[dict[str, Any]],
+) -> None:
+    """Replace the detailed stored offers for one account.
+
+    The caller is responsible for deciding when a promotion check result should
+    clear old stored offers. ``check-promos`` passes the complete current offer
+    list on every successful check.
+    """
+    conn.execute("DELETE FROM promotions WHERE account_id = ?", (account_id,))
+    for position, offer in enumerate(offers):
+        conn.execute(
+            """
+            INSERT INTO promotions (account_id, position, name, status, expiry)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                account_id,
+                position,
+                offer.get("name") or "",
+                offer.get("status"),
+                offer.get("expiry"),
+            ),
+        )
+    conn.commit()
+
+
+def get_promotions(
+    conn: sqlite3.Connection,
+    account_ids: Iterable[int] | None = None,
+) -> list[sqlite3.Row]:
+    """Return stored promotions for active-pool accounts, ordered by account/position.
+
+    ``account_ids`` is optional. When omitted, promotions for every active-pool
+    account are returned. Account IDs below ``ACTIVE_ACCOUNT_MIN_ID`` are always
+    excluded, matching every other active-pool query.
+    """
+    where = ["a.id >= ?"]
+    params: list[Any] = [ACTIVE_ACCOUNT_MIN_ID]
+    if account_ids is not None:
+        account_ids = tuple(account_ids)
+        if not account_ids:
+            return []
+        placeholders = ",".join("?" for _ in account_ids)
+        where.append(f"p.account_id IN ({placeholders})")
+        params.extend(account_ids)
+
+    rows = conn.execute(
+        f"""
+        SELECT p.*, a.email, a.status AS account_status
+        FROM promotions p
+        JOIN accounts a ON a.id = p.account_id
+        WHERE {' AND '.join(where)}
+        ORDER BY p.account_id, p.position
+        """,
+        params,
+    ).fetchall()
+    return list(rows)
+
+
 def mark_verified(conn: sqlite3.Connection, account_id: int) -> None:
     conn.execute(
         "UPDATE accounts SET status = 'verified', verified_at = ? WHERE id = ?",
@@ -229,9 +326,22 @@ def mark_promo(
     expiry: str | None = None,
     used: bool = False,
     count: int | None = None,
+    offers: list[dict[str, Any]] | None = None,
 ) -> None:
+    stored_offers = _offers_from_promo_args(
+        name=name,
+        status=status,
+        expiry=expiry,
+        offers=offers,
+    )
+    first_offer = stored_offers[0] if stored_offers else None
+    summary_name = first_offer.get("name") if first_offer else None
+    summary_status = (first_offer.get("status") or status) if first_offer else status
+    summary_expiry = (first_offer.get("expiry") or expiry) if first_offer else expiry
     if count is None:
-        count = 1 if name else 0
+        count = len(stored_offers) if stored_offers else (1 if name else 0)
+    if offers is not None:
+        count = len(stored_offers)
     conn.execute(
         """
         UPDATE accounts
@@ -244,15 +354,16 @@ def mark_promo(
         WHERE id = ?
         """,
         (
-            name,
-            status,
-            expiry,
+            summary_name,
+            summary_status,
+            summary_expiry,
             int(used),
             utc_now_iso(),
             int(count),
             account_id,
         ),
     )
+    replace_promotions(conn, account_id, stored_offers)
     conn.commit()
 
 

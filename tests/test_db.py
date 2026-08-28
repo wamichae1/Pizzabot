@@ -180,6 +180,108 @@ class TestDb(unittest.TestCase):
                 },
             )
 
+    def test_mark_promo_persists_every_offer_in_detailed_table(self):
+        account_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            self.conn,
+            {
+                "id": account_id,
+                "email": "test+33@gmail.com",
+                "first_name": "First",
+                "last_name": "Last",
+                "status": "verified",
+            },
+        )
+
+        db.mark_promo(
+            self.conn,
+            account_id,
+            name="First Summary Offer",
+            status="active",
+            expiry="Expires in 1 day!",
+            offers=[
+                {
+                    "name": "First Summary Offer",
+                    "status": "active",
+                    "expiry": "Expires in 1 day!",
+                },
+                {
+                    "name": "Second Offer",
+                    "status": "active",
+                    "expiry": "Expiring in 4 days!",
+                },
+            ],
+        )
+
+        rows = db.get_promotions(self.conn, account_ids=[account_id])
+        self.assertEqual(
+            [row["name"] for row in rows],
+            ["First Summary Offer", "Second Offer"],
+        )
+        self.assertEqual(
+            [row["expiry"] for row in rows],
+            ["Expires in 1 day!", "Expiring in 4 days!"],
+        )
+
+        account = db.get_account(self.conn, account_id)
+        self.assertEqual(account["promotion_count"], 2)
+        self.assertEqual(account["promotion_name"], "First Summary Offer")
+
+    def test_zero_offer_promo_clears_detailed_offers(self):
+        account_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            self.conn,
+            {
+                "id": account_id,
+                "email": "test+33@gmail.com",
+                "first_name": "First",
+                "last_name": "Last",
+                "status": "verified",
+            },
+        )
+        db.mark_promo(
+            self.conn,
+            account_id,
+            name="Old Offer",
+            expiry="Expires in 1 day!",
+        )
+        self.assertEqual(len(db.get_promotions(self.conn, account_ids=[account_id])), 1)
+
+        db.mark_promo(self.conn, account_id, name=None, status=None, expiry=None)
+
+        self.assertEqual(db.get_promotions(self.conn, account_ids=[account_id]), [])
+        account = db.get_account(self.conn, account_id)
+        self.assertIsNone(account["promotion_name"])
+        self.assertEqual(account["promotion_count"], 0)
+
+    def test_promotions_respect_active_pool_minimum(self):
+        old_id = db.ACTIVE_ACCOUNT_MIN_ID - 1
+        active_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            self.conn,
+            {"id": old_id, "email": "old+32@gmail.com", "first_name": "Old", "last_name": "Account"},
+        )
+        db.upsert_account(
+            self.conn,
+            {"id": active_id, "email": "active+33@gmail.com", "first_name": "Active", "last_name": "Account"},
+        )
+        db.mark_promo(
+            self.conn,
+            old_id,
+            name="Old Offer",
+            expiry="Expires in 1 day!",
+        )
+        db.mark_promo(
+            self.conn,
+            active_id,
+            name="Active Offer",
+            expiry="Expires in 2 days!",
+        )
+
+        rows = db.get_promotions(self.conn)
+        self.assertEqual([row["account_id"] for row in rows], [active_id])
+        self.assertEqual([row["name"] for row in rows], ["Active Offer"])
+
 
 if __name__ == "__main__":
     unittest.main()

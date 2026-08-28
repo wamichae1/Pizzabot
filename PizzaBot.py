@@ -54,6 +54,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p_run.add_argument("--loop", action="store_true", help="Repeat based on promo_check_frequency_days.")
 
     sub.add_parser("stats", help="Show account pool summary.")
+    p_promos = sub.add_parser("promos", help="Show stored promos for active accounts.")
+    p_promos.add_argument("--ids", default="", help="Comma-separated account ids; default all active accounts.")
     return parser.parse_args(argv)
 
 
@@ -370,7 +372,7 @@ def cmd_check_promos(args: argparse.Namespace) -> int:
                         name=offer["name"],
                         status=offer["status"],
                         expiry=offer["expiry"],
-                        count=len(offers),
+                        offers=offers,
                     )
                     print(f"  Found {len(offers)} limited-time offer(s):")
                     for item in offers:
@@ -463,6 +465,46 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_stored_promos(account: sqlite3.Row, promotions: list[sqlite3.Row]) -> None:
+    print(f"Promos for {account['email']}:")
+    if not promotions:
+        print("  No stored promos.")
+        return
+    for promo in promotions:
+        print(f"  {promo['name']}")
+        if promo["expiry"]:
+            print(f"    {promo['expiry']}")
+
+
+def cmd_promos(args: argparse.Namespace) -> int:
+    """Print stored promotions for active-pool accounts without logging in."""
+    conn = db_mod.connect(args.db)
+    ids = _split_ids(getattr(args, "ids", ""))
+    if ids is not None:
+        accounts = [row for row in db_mod.get_accounts(conn) if row["id"] in ids]
+    else:
+        accounts = db_mod.get_accounts(conn)
+
+    if not accounts:
+        print("No matching active accounts.")
+        conn.close()
+        return 0
+
+    account_ids = [row["id"] for row in accounts]
+    promotions = db_mod.get_promotions(conn, account_ids=account_ids)
+    promotions_by_account: dict[int, list[sqlite3.Row]] = {}
+    for promo in promotions:
+        promotions_by_account.setdefault(promo["account_id"], []).append(promo)
+
+    for account in accounts:
+        stored = promotions_by_account.get(account["id"], [])
+        _print_stored_promos(account, stored)
+        print()
+
+    conn.close()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     handlers = {
@@ -472,6 +514,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "check-promos": cmd_check_promos,
         "run": cmd_run,
         "stats": cmd_stats,
+        "promos": cmd_promos,
     }
     return handlers[args.command](args) or 0
 

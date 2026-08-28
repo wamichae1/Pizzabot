@@ -21,7 +21,7 @@ Hut Rewards limited-time offers.
   - first name
   - last name
   - mobile number
-  - birthday (entered as `MMDD`)
+  - birthday (entered as `MMDD`; generated from the `birthday` config)
   - Terms & Conditions agreed
   - marketing checkboxes left **unchecked**
 - Checks Hut Rewards and records limited-time offers (offer name + expiry).
@@ -58,7 +58,7 @@ This writes `config.json`. It will ask for:
 - target account pool size
 - promotion check frequency (days)
 - default first/last name
-- birthday (`YYYY-MM-DD`)
+- birthday rule (`YYYY-MM-DD` fixed date or `next_month:START-END`)
 - phone area code (used to generate random phone numbers, or a fixed phone)
 - base Gmail address
 - IMAP host / username / app password
@@ -66,6 +66,11 @@ This writes `config.json`. It will ask for:
 
 `config.json` and `pizzabot.db` are gitignored. Don’t commit your IMAP
 password.
+
+The default birthday config is `next_month:1-10`. It generates a random day
+from the first 10 days of the month immediately following the current month.
+For example, if today is in August it generates `YYYY-09-01` through
+`YYYY-09-10`. Set a fixed `YYYY-MM-DD` value to keep the previous behavior.
 
 ---
 
@@ -84,7 +89,7 @@ Runs the full account-creation flow:
    - first name
    - last name
    - mobile number
-   - birthday (`MMDD`)
+   - birthday (`MMDD`; generated from the `birthday` config)
    - accept Terms & Conditions
    - leave marketing unchecked
 7. Mark the account as verified
@@ -170,7 +175,7 @@ pizzabot/
   browser.py           # Playwright browser session wrapper
   config.py            # config.json loader + interactive setup
   db.py                # SQLite schema + account pool helpers
-  generate.py          # +N aliases and random phone numbers
+  generate.py          # +N aliases, random birthdays, and random phone numbers
   mail.py              # IMAP polling + Pizza Hut email link extraction
   pizzahut.py          # Pizza Hut page flows (create + promotions)
 tests/                 # unit tests

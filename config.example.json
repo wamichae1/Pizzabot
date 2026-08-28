@@ -4,7 +4,7 @@
   "base_profile": {
     "first_name": "Jordan",
     "last_name": "Smith",
-    "birthday": "1998-04-12",
+    "birthday": "next_month:1-10",
     "area_code": "905",
     "phone": "",
     "base_email": "youraccount@gmail.com"

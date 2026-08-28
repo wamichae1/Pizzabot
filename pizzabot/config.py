@@ -8,6 +8,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from . import generate as generate_mod
+
 
 DEFAULT_CONFIG_PATH = Path("config.json")
 DEFAULT_DB_PATH = Path("pizzabot.db")
@@ -18,7 +20,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "base_profile": {
         "first_name": "",
         "last_name": "",
-        "birthday": "",
+        "birthday": "next_month:1-10",
         "area_code": "",
         "phone": "",
         "base_email": "",
@@ -95,7 +97,10 @@ def interactive_init(path: Path | str = DEFAULT_CONFIG_PATH) -> dict:
     profile = cfg["base_profile"]
     profile["first_name"] = _ask("Default first name", profile.get("first_name", ""))
     profile["last_name"] = _ask("Default last name", profile.get("last_name", ""))
-    profile["birthday"] = _ask("Birthday (YYYY-MM-DD)", profile.get("birthday", ""))
+    profile["birthday"] = _ask(
+        "Birthday (YYYY-MM-DD or next_month:START-END)",
+        profile.get("birthday", ""),
+    )
     profile["area_code"] = _ask("Phone area code (3 digits)", profile.get("area_code", ""))
     profile["phone"] = _ask(
         "Fixed phone number (blank to generate from area code)", profile.get("phone", "")
@@ -121,7 +126,17 @@ def validate_birthday(value: str) -> None:
     try:
         date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(f"birthday must be YYYY-MM-DD, got {value!r}") from exc
+        match = generate_mod.BIRTHDAY_NEXT_MONTH_RE.fullmatch(value.strip())
+        if not match:
+            raise ValueError(
+                f"birthday must be YYYY-MM-DD or next_month:START-END, got {value!r}"
+            ) from exc
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        if not (1 <= start <= end <= 31):
+            raise ValueError(
+                f"birthday rule {value!r} must use a valid day range from 1 to 31"
+            )
 
 
 def ensure_base_profile(config: dict, path: Path | str = DEFAULT_CONFIG_PATH, prompt: bool = True) -> dict:
@@ -139,7 +154,10 @@ def ensure_base_profile(config: dict, path: Path | str = DEFAULT_CONFIG_PATH, pr
         profile["last_name"] = _ask("Default last name", "")
         changed = True
     if not profile.get("birthday"):
-        profile["birthday"] = _ask("Birthday (YYYY-MM-DD)", "")
+        profile["birthday"] = _ask(
+            "Birthday (YYYY-MM-DD or next_month:START-END)",
+            "",
+        )
         changed = True
     if not profile.get("area_code"):
         profile["area_code"] = _ask("Phone area code (3 digits)", "")

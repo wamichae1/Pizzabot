@@ -169,12 +169,13 @@ def cmd_create(args: argparse.Namespace) -> int:
         for _ in range(needed):
             alias_id = db_mod.next_alias_id(conn)
             email = gen_mod.make_alias(profile["base_email"], alias_id)
+            birthday = gen_mod.generate_birthday(profile)
             print(f"  Creating {email} ...")
             signup_profile = {
                 "email": email,
                 "first_name": profile["first_name"],
                 "last_name": profile["last_name"],
-                "birthday": profile["birthday"],
+                "birthday": birthday,
                 "phone": gen_mod.generate_phone(profile),
             }
             # Insert the row up front so the alias is tracked even if a later
@@ -186,7 +187,7 @@ def cmd_create(args: argparse.Namespace) -> int:
                     "email": email,
                     "first_name": profile["first_name"],
                     "last_name": profile["last_name"],
-                    "birthday": profile["birthday"],
+                    "birthday": birthday,
                     "phone": signup_profile["phone"],
                     "status": "created",
                     "last_action": "created",

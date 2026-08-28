@@ -114,8 +114,11 @@ def _display_action(action: str | None) -> str:
         "birthday": "Birthday filled",
         "terms": "Terms checked",
         "account_created": "Account created",
-        "promo_login": "Promo login",
+        "deals_page": "Deals page",
+        "account_page": "Account page",
         "hut_rewards": "Hut Rewards",
+        "rewards_page": "Rewards page",
+        "rewards_loaded": "Rewards loaded",
         "promo_checked": "Promo checked",
         "manual_review": "Manual review",
     }
@@ -323,39 +326,55 @@ def cmd_check_promos(args: argparse.Namespace) -> int:
         for row in accounts:
             email = row["email"]
             print(f"Checking promotions for {email} ...")
-            db_mod.mark_action(conn, row["id"], "promo_login")
-            pizzahut.login_with_email(
-                session, email, selectors, flow="promo", stage="login"
-            )
-            db_mod.mark_action(conn, row["id"], "waiting_for_verification")
-            link = pizzahut.wait_for_verification_email(
-                imap, email, timeout_seconds=args.timeout
-            )
-            if not link:
-                print(f"  No sign-in link received for {email}; skipping promo check.")
-                continue
-            db_mod.mark_action(conn, row["id"], "verification_received")
-            pizzahut.open_verification_login_link(session, link, selectors)
-            db_mod.mark_action(conn, row["id"], "hut_rewards")
-            offers = pizzahut.check_promotion(session, selectors)
-            if offers:
-                offer = offers[0]
-                db_mod.mark_promo(
-                    conn,
-                    row["id"],
-                    name=offer["name"],
-                    status=offer["status"],
-                    expiry=offer["expiry"],
-                    count=len(offers),
+            try:
+                db_mod.mark_action(conn, row["id"], "login")
+                pizzahut.login_with_email(
+                    session, email, selectors, flow="promo", stage="login"
                 )
-                print(f"  Found {len(offers)} limited-time offer(s):")
-                for item in offers:
-                    print(f"    {item['name']} ({item['expiry']})")
-                db_mod.mark_action(conn, row["id"], "promo_checked")
-            else:
-                db_mod.mark_promo(conn, row["id"], name=None, status=None, expiry=None)
-                db_mod.mark_action(conn, row["id"], "promo_checked")
-                print(f"  No limited-time offers detected for {email} (valid result).")
+                db_mod.mark_action(conn, row["id"], "waiting_for_verification")
+                link = pizzahut.wait_for_verification_email(
+                    imap, email, timeout_seconds=args.timeout
+                )
+                if not link:
+                    print(f"  No sign-in link received for {email}; skipping promo check.")
+                    db_mod.mark_error(
+                        conn, row["id"],
+                        "No sign-in link received for verification/login",
+                    )
+                    continue
+                db_mod.mark_action(conn, row["id"], "verification_received")
+                pizzahut.open_verification_login_link(session, link, selectors)
+                offers = pizzahut.check_promotion(
+                    session,
+                    selectors,
+                    report_stage=lambda stage, account_id=row["id"]: db_mod.mark_action(
+                        conn, account_id, stage
+                    ),
+                )
+                if offers:
+                    offer = offers[0]
+                    db_mod.mark_promo(
+                        conn,
+                        row["id"],
+                        name=offer["name"],
+                        status=offer["status"],
+                        expiry=offer["expiry"],
+                        count=len(offers),
+                    )
+                    print(f"  Found {len(offers)} limited-time offer(s):")
+                    for item in offers:
+                        print(f"    {item['name']} ({item['expiry']})")
+                    db_mod.mark_action(conn, row["id"], "promo_checked")
+                else:
+                    db_mod.mark_promo(conn, row["id"], name=None, status=None, expiry=None)
+                    db_mod.mark_action(conn, row["id"], "promo_checked")
+                    print(f"  No limited-time offers detected for {email} (valid result).")
+            except pizzahut.PizzahutError as exc:
+                print(f"  Error: {exc}")
+                db_mod.mark_error(conn, row["id"], exc)
+            except Exception as exc:
+                print(f"  Unexpected error: {exc}")
+                db_mod.mark_error(conn, row["id"], exc)
     conn.close()
     return 0
 

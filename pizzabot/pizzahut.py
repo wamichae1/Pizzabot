@@ -20,6 +20,7 @@ from pizzabot.browser import BrowserSession, click_first, visible_locator
 LOGIN_URL = "https://www.pizzahut.ca/login"
 COMPLETE_PROFILE_URL = "https://www.pizzahut.ca/complete-profile"
 DEALS_URL = "https://www.pizzahut.ca/order/deals"
+MY_ACCOUNT_DETAILS_URL = "https://www.pizzahut.ca/my-account/details"
 
 
 class PizzahutError(RuntimeError):
@@ -37,6 +38,31 @@ def _selectors(custom: dict, key: str, defaults: list[str]) -> list[str]:
 
 def _url_contains(page, part: str) -> bool:
     return part in page.url
+
+
+def _wait_for_url_contains(
+    page,
+    expected_part: str,
+    flow: str,
+    stage: str,
+    action: str,
+    timeout_seconds: float = 8.0,
+) -> None:
+    """Wait for the browser URL to contain expected_part, raising a stage-specific error."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if expected_part in page.url:
+            return
+        if time.monotonic() >= deadline:
+            break
+        try:
+            page.wait_for_timeout(250)
+        except AttributeError:
+            break
+    raise PizzahutError(
+        f"[{flow}/{stage}] {action} did not reach the expected URL. "
+        f"Expected URL: {expected_part!r}. Current URL: {page.url}"
+    )
 
 
 def _missing(page, flow: str, stage: str, element: str) -> PizzahutError:
@@ -700,8 +726,13 @@ def complete_profile(
 
 
 _VIEW_PROFILE_NAME = re.compile(r"^\s*view\s+profile\s*$", re.IGNORECASE)
-_ACCOUNT_MENU_OPTIONS = ("My Details", "My Addresses", "Order History", "Hut Rewards")
+_MY_DETAILS_NAME = re.compile(r"^\s*my\s+details\s*$", re.IGNORECASE)
 _HUT_REWARDS_NAME = re.compile(r"^\s*hut\s+rewards\s*$", re.IGNORECASE)
+_REQUESTED_TIME_TITLE = re.compile(
+    r"^\s*change\s+carryout\s+time\s*$",
+    re.IGNORECASE,
+)
+_CLOSE_CONTROL_NAME = re.compile(r"^\s*(close|dismiss)\s*$", re.IGNORECASE)
 
 
 def _visible_locator_first(locators):
@@ -712,6 +743,38 @@ def _visible_locator_first(locators):
         except Exception:
             continue
     return None
+
+
+def _close_requested_time_modal(page) -> bool:
+    """Close only Pizza Hut's specific 'Change Carryout Time' modal if shown."""
+    modal = page.locator('[data-testid="requested-time-modal"]').filter(
+        has=page.get_by_role("heading", name=_REQUESTED_TIME_TITLE),
+    ).first
+    try:
+        if modal.count() == 0 or not modal.is_visible(timeout=500):
+            return False
+    except Exception:
+        return False
+
+    close = _visible_locator_first(
+        [
+            modal.get_by_role("button", name=_CLOSE_CONTROL_NAME),
+            modal.locator("button[aria-label*='close' i]"),
+        ]
+    )
+    if close is None:
+        raise PizzahutError(
+            "[promo/deals_page] 'Change Carryout Time' modal is open, "
+            "but its close control was not found."
+        )
+
+    close.click(timeout=3000)
+    if not _wait_dialog_gone(modal):
+        raise PizzahutError(
+            "[promo/deals_page] 'Change Carryout Time' modal did not close "
+            f"after clicking its close control. Current URL: {page.url}"
+        )
+    return True
 
 
 def _wait_for_view_profile(page, flow: str, stage: str, timeout_seconds: float = 10.0):
@@ -758,11 +821,12 @@ def _wait_for_view_profile(page, flow: str, stage: str, timeout_seconds: float =
     )
 
 
-def _wait_for_account_menu(page, flow: str, stage: str, timeout_seconds: float = 5.0):
-    """Wait for the four known account-menu options and target Hut Rewards."""
+
+
+def _wait_for_hut_rewards_option(page, flow: str, stage: str, timeout_seconds: float = 5.0):
+    """Wait for a Hut Rewards control on the account pages (menu item, button, or link)."""
     deadline = time.monotonic() + timeout_seconds
     while True:
-        visible_options = []
         rewards = _visible_locator_first(
             [
                 page.get_by_role("menuitem", name=_HUT_REWARDS_NAME),
@@ -771,40 +835,32 @@ def _wait_for_account_menu(page, flow: str, stage: str, timeout_seconds: float =
                 page.get_by_text(_HUT_REWARDS_NAME, exact=True),
             ]
         )
-        for option in _ACCOUNT_MENU_OPTIONS:
-            locator = page.get_by_text(re.compile(rf"^\s*{re.escape(option)}\s*$", re.I))
-            try:
-                if locator.count() > 0 and locator.first.is_visible(timeout=200):
-                    visible_options.append(option)
-            except Exception:
-                pass
-        if rewards is not None and visible_options:
-            return rewards, visible_options
+        if rewards is not None:
+            return rewards
         if time.monotonic() >= deadline:
             break
         try:
             page.wait_for_timeout(250)
         except AttributeError:
             break
-
     diagnostics = page.evaluate(
         """
         () => ({
           url: location.href,
-          menus: Array.from(document.querySelectorAll(
-            '[role="menu"], [role="menuitem"], nav, ul'
-          )).map((el) => ({
-            tag: el.tagName.toLowerCase(),
-            role: el.getAttribute('role'),
-            testid: el.getAttribute('data-testid'),
-            text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
-          })).filter((el) => el.text),
+          hutRewards: Array.from(document.querySelectorAll('a, button, [role="menuitem"], [role="button"]'))
+            .map((el) => ({
+              tag: el.tagName.toLowerCase(),
+              role: el.getAttribute('role'),
+              testid: el.getAttribute('data-testid'),
+              ariaLabel: el.getAttribute('aria-label'),
+              text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(),
+            }))
+            .filter((el) => /hut\\s+rewards/i.test(el.text || el.ariaLabel || '')),
         })
         """
     )
     raise PizzahutError(
-        f"[{flow}/{stage}] account menu did not expose the expected Hut Rewards option. "
-        f"Expected options: {', '.join(_ACCOUNT_MENU_OPTIONS)}. "
+        f"[{flow}/{stage}] Hut Rewards control not found. "
         f"Current page state: {json.dumps(diagnostics, indent=2)}"
     )
 
@@ -862,20 +918,34 @@ def _wait_for_hut_rewards_content(page, flow: str, stage: str, timeout_seconds: 
     )
 
 
-def navigate_to_hut_rewards(session: BrowserSession, selectors: dict[str, Any] | None = None) -> None:
+def navigate_to_hut_rewards(
+    session: BrowserSession,
+    selectors: dict[str, Any] | None = None,
+    report_stage=None,
+) -> None:
     selectors = selectors or {}
     page = session.page
     flow = "promo"
-    stage = "navigate_to_hut_rewards"
 
     accept_cookies(session, selectors)
-    if not _url_contains(page, "/order/deals"):
-        # The passwordless login can land on `/` before the profile session is
-        # fully ready; give it a moment, then navigate to the deals page.
-        time.sleep(3)
-        session.goto(DEALS_URL, timeout_ms=90_000)
-        accept_cookies(session, selectors)
-        time.sleep(2)
+
+    # The login link should land on /order/deals. Give the SPA a moment to
+    # redirect, but do NOT auto-navigate if it lands somewhere else: that
+    # would mask an authentication/navigation failure.
+    _wait_for_url_contains(
+        page,
+        "/order/deals",
+        flow,
+        "deals_page",
+        "verification login link",
+        timeout_seconds=8,
+    )
+    if report_stage:
+        report_stage("deals_page")
+
+    # When the store is closed this specific modal blocks the app behind a
+    # backdrop. Leave every other overlay alone.
+    _close_requested_time_modal(page)
 
     # A project-configured selector remains an explicit override, never a
     # generic class/text fallback.
@@ -885,53 +955,101 @@ def navigate_to_hut_rewards(session: BrowserSession, selectors: dict[str, Any] |
     try:
         # Prefer the live tooltip/accessibly named person icon. Keep the
         # site-discovered account-action test ID only as a focused fallback.
-        profile_control = _wait_for_view_profile(page, flow, stage)
+        profile_control = _wait_for_view_profile(page, flow, "account_page")
         profile_control.hover(timeout=3000)
         profile_control.click(timeout=5000)
     except Exception as exc:
         if isinstance(exc, PizzahutError):
             raise
         raise PizzahutError(
-            f"[{flow}/{stage}] could not open the View Profile account menu. "
+            f"[{flow}/account_page] could not click the account icon. "
             f"Current URL: {page.url}"
         ) from exc
-    time.sleep(1)
 
     try:
-        rewards, visible_options = _wait_for_account_menu(page, flow, stage)
-        if visible_options != list(_ACCOUNT_MENU_OPTIONS):
-            # Ordering can vary, but the live menu exposes these four choices.
-            if set(visible_options) != set(_ACCOUNT_MENU_OPTIONS):
-                raise PizzahutError(
-                    f"[{flow}/{stage}] unexpected account menu options: "
-                    f"{', '.join(visible_options)}"
-                )
+        # Clicking the account icon should navigate to /my-account/details.
+        # If it opens a menu instead, fall back to clicking the exact
+        # "My Details" option that lives on that menu.
+        _wait_for_url_contains(
+            page,
+            "/my-account/details",
+            flow,
+            "account_page",
+            "account icon click",
+            timeout_seconds=5,
+        )
+    except PizzahutError:
+        details = _visible_locator_first(
+            [
+                page.get_by_role("menuitem", name=_MY_DETAILS_NAME),
+                page.get_by_role("button", name=_MY_DETAILS_NAME),
+                page.get_by_role("link", name=_MY_DETAILS_NAME),
+                page.get_by_text(_MY_DETAILS_NAME, exact=True),
+            ]
+        )
+        if details is None:
+            raise PizzahutError(
+                f"[{flow}/account_page] account page was not reached after clicking the account icon. "
+                f"Expected URL: {MY_ACCOUNT_DETAILS_URL!r}. Current URL: {page.url}. "
+                f"Account menu option 'My Details' was not found either."
+            )
+        details.click(timeout=5000)
+        _wait_for_url_contains(
+            page,
+            "/my-account/details",
+            flow,
+            "account_page",
+            "My Details menu option click",
+            timeout_seconds=8,
+        )
+    if report_stage:
+        report_stage("account_page")
+
+    try:
+        rewards = _wait_for_hut_rewards_option(page, flow, "hut_rewards")
         rewards.click(timeout=5000)
+        _wait_for_url_contains(
+            page,
+            "/rewards",
+            flow,
+            "hut_rewards",
+            "Hut Rewards click",
+            timeout_seconds=10,
+        )
+        if report_stage:
+            report_stage("rewards_page")
+    except PizzahutError:
+        raise
     except Exception as exc:
-        if isinstance(exc, PizzahutError):
-            raise
         raise PizzahutError(
-            f"[{flow}/{stage}] could not open Hut Rewards from the account menu. "
+            f"[{flow}/hut_rewards] could not open Hut Rewards from the account page. "
             f"Current URL: {page.url}"
         ) from exc
 
-    time.sleep(2)
-    _wait_for_hut_rewards_content(page, flow, stage)
+    _wait_for_hut_rewards_content(page, flow, "rewards_page")
+
+    # The rewards page skeleton (headers, balance marker, etc.) can render
+    # before the Limited Time Offers section is populated by async fetches.
+    # Wait briefly for the offer content to settle so extraction does not
+    # race ahead and miss visible offers.
+    time.sleep(3)
+
+    if report_stage:
+        report_stage("rewards_loaded")
 
 
-def extract_limited_time_offers(session: BrowserSession) -> list[dict]:
-    """Extract offer cards from the live section, or [] only after rewards loaded."""
-    result = session.page.evaluate(
-        r"""
+_EXTRACT_OFFERS_JS = r"""
         () => {
           const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
           const expiryPattern = /\bExpir(?:es?|ing)\s+in\s+[^.!?\n]+!?/i;
-          const headings = Array.from(document.querySelectorAll(
-            'h1, h2, h3, h4, h5, h6, [role="heading"]'
-          ));
-          const heading = headings.find((el) =>
+          const findHeading = (selector) => Array.from(
+            document.querySelectorAll(selector)
+          ).find((el) =>
             clean(el.innerText).toLowerCase() === 'limited time offers'
           );
+          const heading =
+            findHeading('h1, h2, h3, h4, h5, h6, [role="heading"]') ||
+            findHeading('div, section, article, span, p, button, a');
           if (!heading) {
             return {
               sectionFound: false,
@@ -966,34 +1084,37 @@ def extract_limited_time_offers(session: BrowserSession) -> list[dict]:
           const records = [];
           for (const [recordIndex, expiryEl] of expiryElements.entries()) {
             let card = expiryEl.parentElement;
+            let candidateName = '';
+            let candidateExpiry = null;
             while (card && card !== section.parentElement) {
               const text = clean(card.innerText || card.textContent);
               const match = text.match(expiryPattern);
-              if (
-                match &&
-                text.length > match[0].length + 4 &&
-                card.children.length > 0
-              ) {
-                break;
+              if (match && card.children.length > 0) {
+                let name = text.replace(match[0], ' ');
+                name = name.replace(/\b(?:Redeem(?: Now)?|Start an order)\b/gi, ' ');
+                name = name.replace(/[⏳⌛]/gu, ' ');
+                name = clean(name).replace(/^[-.:;, ]+|[-.:;, ]+$/g, '');
+                if (name && name.length >= 4) {
+                  candidateName = name;
+                  candidateExpiry = clean(match[0]);
+                  break;
+                }
               }
               card = card.parentElement;
             }
-            if (!card || card === document.body) continue;
-
-            const text = clean(card.innerText || card.textContent);
-            const match = text.match(expiryPattern);
-            if (!match) continue;
-            const expiry = clean(match[0]);
-            let name = text.replace(match[0], ' ');
-            name = name.replace(/\b(?:Redeem Now|Start an order)\b/gi, ' ');
-            name = name.replace(/[⏳⌛]/gu, ' ');
-            name = clean(name).replace(/^[-.:;, ]+|[-.:;, ]+$/g, '');
-            if (!name || name.length < 4) continue;
+            if (
+              !card ||
+              card === document.body ||
+              !candidateName ||
+              !candidateExpiry
+            ) {
+              continue;
+            }
             records.push({
               order: recordIndex,
-              key: `${name.toLowerCase()}::${expiry.toLowerCase()}`,
-              name,
-              expiry,
+              key: `${candidateName.toLowerCase()}::${candidateExpiry.toLowerCase()}`,
+              name: candidateName,
+              expiry: candidateExpiry,
               testid: card.getAttribute('data-testid'),
               outerHTML: card.outerHTML.slice(0, 500),
             });
@@ -1018,10 +1139,40 @@ def extract_limited_time_offers(session: BrowserSession) -> list[dict]:
           };
         }
         """
-    )
-    return list(result.get("offers", []))
 
 
-def check_promotion(session: BrowserSession, selectors: dict[str, Any] | None = None) -> list[dict]:
-    navigate_to_hut_rewards(session, selectors)
+def extract_limited_time_offers(session: BrowserSession) -> list[dict]:
+    """Extract offer cards from the live section, or [] only after rewards loaded.
+
+    Searches the main document AND every iframe content document for the
+    "Limited time offers" heading and offer cards. Pizza Hut may render the
+    rewards page content in the main document or inside embedded iframes, so
+    keep checking later frames when an earlier frame finds only the section
+    heading without offer cards.
+    """
+    page = session.page
+
+    # Collect all frames: main frame first, then every iframe.
+    frames = [page.main_frame] + [f for f in page.frames if f != page.main_frame]
+
+    for frame in frames:
+        result = frame.evaluate(_EXTRACT_OFFERS_JS)
+        offers = list(result.get("offers", []))
+        # A frame can contain the "Limited time offers" heading without the
+        # offer cards (the heading renders in the main document while the
+        # cards live in an embedded iframe). Only stop early when a frame
+        # actually produced offers; otherwise keep checking later frames.
+        if result.get("sectionFound") and offers:
+            return offers
+
+    # No frame produced offers (or no frame even contained the section).
+    # Return empty, which callers treat as a valid "no offers" result.
+    return []
+
+def check_promotion(
+    session: BrowserSession,
+    selectors: dict[str, Any] | None = None,
+    report_stage=None,
+) -> list[dict]:
+    navigate_to_hut_rewards(session, selectors, report_stage=report_stage)
     return extract_limited_time_offers(session)

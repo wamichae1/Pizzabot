@@ -75,6 +75,16 @@ def _format_db_time(value: str | None) -> str:
         return value
 
 
+def _format_birthday(value: str | None) -> str:
+    if not value:
+        return "--"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "--"
+    return parsed.strftime("%m-%d")
+
+
 def _format_created_verified(row) -> str:
     created = _format_db_time(row["created_at"])
     verified = _format_db_time(row["verified_at"])
@@ -423,6 +433,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
     print("-" * 100)
     print(
         f"{'ID':>2} {'EMAIL':<28} {'STATUS':<13} "
+        f"{'BIRTHDAY':<10} "
         f"{'LAST ACTION':<22} {'PROMOS':>6}  {'LAST CHECK':<11} "
         f"{'CREATED / VERIFIED':<20}"
     )
@@ -442,7 +453,9 @@ def cmd_stats(args: argparse.Namespace) -> int:
             action = f"{action} ({row['promotion_status']})"
         print(
             f"{row['id']:>2} {_truncate(row['email'], 28):<28} "
-            f"{_truncate(row['status'], 13):<13} {_truncate(action, 22):<22} "
+            f"{_truncate(row['status'], 13):<13} "
+            f"{_format_birthday(row['birthday']):<10} "
+            f"{_truncate(action, 22):<22} "
             f"{promos:>6}  {last_check:<11} "
             f"{_truncate(_format_created_verified(row), 20):<20}"
         )

@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+ACTIVE_ACCOUNT_MIN_ID = 33
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY,
@@ -81,8 +84,11 @@ def next_alias_id(conn: sqlite3.Connection) -> int:
 
     The alias_tracker table keeps every allocated number permanently, so
     an alias is never reused even if the account row is later removed.
+    Old pre-ACTIVE_ACCOUNT_MIN_ID test accounts are no longer eligible for
+    automated pool operations, so new allocations must also start at or
+    above the active-pool minimum.
     """
-    n = 1
+    n = ACTIVE_ACCOUNT_MIN_ID
     while conn.execute(
         """
         SELECT 1
@@ -136,14 +142,19 @@ def upsert_account(conn: sqlite3.Connection, account: dict[str, Any]) -> int:
 
 
 def get_accounts(conn: sqlite3.Connection, statuses: Iterable[str] | None = None) -> list[sqlite3.Row]:
-    if statuses is None:
-        rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
-    else:
+    where = ["id >= ?"]
+    params: list[Any] = [ACTIVE_ACCOUNT_MIN_ID]
+    if statuses is not None:
+        statuses = tuple(statuses)
+        if not statuses:
+            return []
         placeholders = ",".join("?" for _ in statuses)
-        rows = conn.execute(
-            f"SELECT * FROM accounts WHERE status IN ({placeholders}) ORDER BY id",
-            tuple(statuses),
-        ).fetchall()
+        where.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    rows = conn.execute(
+        f"SELECT * FROM accounts WHERE {' AND '.join(where)} ORDER BY id",
+        params,
+    ).fetchall()
     return list(rows)
 
 
@@ -153,7 +164,11 @@ def get_account(conn: sqlite3.Connection, account_id: int) -> sqlite3.Row | None
 
 def count_active(conn: sqlite3.Connection) -> int:
     row = conn.execute(
-        "SELECT COUNT(*) AS c FROM accounts WHERE status = 'verified' AND promotion_used = 0"
+        """
+        SELECT COUNT(*) AS c FROM accounts
+        WHERE id >= ? AND status = 'verified' AND promotion_used = 0
+        """,
+        (ACTIVE_ACCOUNT_MIN_ID,),
     ).fetchone()
     return int(row["c"])
 
@@ -166,9 +181,13 @@ def get_promo_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     rows = conn.execute(
         """
         SELECT * FROM accounts
-        WHERE status = 'verified' AND check_promotions = 1 AND promotion_used = 0
+        WHERE id >= ?
+          AND status = 'verified'
+          AND check_promotions = 1
+          AND promotion_used = 0
         ORDER BY id
-        """
+        """,
+        (ACTIVE_ACCOUNT_MIN_ID,),
     ).fetchall()
     return list(rows)
 

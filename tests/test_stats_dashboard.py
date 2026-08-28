@@ -121,6 +121,131 @@ class TestStatsDashboard(unittest.TestCase):
         self.assertIn("pypizzabot+7@gmail.com", text)
         self.assertIn("Promo checked", text)
 
+    def test_stats_renders_stored_birthday_as_mm_dd(self):
+        conn = db.connect(self.db_path)
+        account_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            conn,
+            {
+                "id": account_id,
+                "email": "pypizzabot+33@gmail.com",
+                "first_name": "First",
+                "last_name": "Last",
+                "birthday": "2026-09-07",
+                "status": "verified",
+            },
+        )
+        db.mark_promo(
+            conn,
+            account_id,
+            name=None,
+            status=None,
+            expiry=None,
+            count=0,
+        )
+        db.mark_action(conn, account_id, "promo_checked")
+        conn.close()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cmd_stats(argparse.Namespace(db=self.db_path))
+        text = output.getvalue()
+
+        self.assertIn("BIRTHDAY", text)
+        self.assertIn("09-07", text)
+        self.assertNotIn("2026-09-07", text)
+
+    def test_stats_excludes_accounts_below_minimum_id_from_rows(self):
+        conn = db.connect(self.db_path)
+        db.upsert_account(
+            conn,
+            {
+                "id": 32,
+                "email": "old+32@gmail.com",
+                "first_name": "Old",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        active_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            conn,
+            {
+                "id": active_id,
+                "email": "active+33@gmail.com",
+                "first_name": "Active",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        conn.close()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cmd_stats(argparse.Namespace(db=self.db_path))
+        text = output.getvalue()
+
+        self.assertIn("active+33@gmail.com", text)
+        self.assertNotIn("old+32@gmail.com", text)
+        self.assertIn("Total: 1 | Active: 1 | Verified: 1", text)
+
+    def test_stats_aggregates_respect_active_pool_filter(self):
+        conn = db.connect(self.db_path)
+        # Old verified/used account must not contribute to any aggregate.
+        db.upsert_account(
+            conn,
+            {
+                "id": 32,
+                "email": "old+32@gmail.com",
+                "first_name": "Old",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        db.mark_promo(
+            conn,
+            32,
+            name="Old Offer",
+            status="active",
+            expiry="Expires in 1 day",
+            used=True,
+            count=1,
+        )
+
+        active_id = db.ACTIVE_ACCOUNT_MIN_ID
+        db.upsert_account(
+            conn,
+            {
+                "id": active_id,
+                "email": "active+33@gmail.com",
+                "first_name": "Active",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        db.upsert_account(
+            conn,
+            {
+                "id": active_id + 1,
+                "email": "manual+34@gmail.com",
+                "first_name": "Manual",
+                "last_name": "Account",
+                "status": "manual_review",
+            },
+        )
+        conn.close()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            cmd_stats(argparse.Namespace(db=self.db_path))
+        text = output.getvalue()
+
+        self.assertIn(
+            "Total: 2 | Active: 1 | Verified: 1 | Manual Review: 1 | Promo Used: 0",
+            text,
+        )
+        self.assertNotIn("old+32@gmail.com", text)
+
     def test_display_action_is_human_readable(self):
         self.assertEqual(_display_action("waiting_for_verification"), "Waiting for email")
         self.assertEqual(_display_action("error: birthday mismatch"), "Error: birthday mismatch")

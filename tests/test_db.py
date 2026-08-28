@@ -59,7 +59,11 @@ class TestDb(unittest.TestCase):
         self.assertEqual(db.get_account(self.conn, row["id"])["status"], "verified")
 
     def test_alias_numbers_are_sequential_and_never_reused(self):
-        for expected in (1, 2, 3):
+        for expected in (
+            db.ACTIVE_ACCOUNT_MIN_ID,
+            db.ACTIVE_ACCOUNT_MIN_ID + 1,
+            db.ACTIVE_ACCOUNT_MIN_ID + 2,
+        ):
             n = db.next_alias_id(self.conn)
             self.assertEqual(n, expected)
             db.upsert_account(
@@ -73,9 +77,89 @@ class TestDb(unittest.TestCase):
             )
 
         # Even if an account row is deleted, its alias stays tracked.
-        self.conn.execute("DELETE FROM accounts WHERE id = 2")
+        self.conn.execute(
+            "DELETE FROM accounts WHERE id = ?",
+            (db.ACTIVE_ACCOUNT_MIN_ID + 1,),
+        )
         self.conn.commit()
-        self.assertEqual(db.next_alias_id(self.conn), 4)
+        self.assertEqual(db.next_alias_id(self.conn), db.ACTIVE_ACCOUNT_MIN_ID + 3)
+
+    def test_active_pool_excludes_accounts_below_minimum_id(self):
+        db.upsert_account(
+            self.conn,
+            {
+                "id": 32,
+                "email": "test+32@gmail.com",
+                "first_name": "Old",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        db.upsert_account(
+            self.conn,
+            {
+                "id": db.ACTIVE_ACCOUNT_MIN_ID,
+                "email": "test+33@gmail.com",
+                "first_name": "Active",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+
+        self.assertEqual(
+            [row["id"] for row in db.get_accounts(self.conn)],
+            [db.ACTIVE_ACCOUNT_MIN_ID],
+        )
+        self.assertEqual(db.count_active(self.conn), 1)
+        self.assertEqual(
+            [row["id"] for row in db.get_promo_accounts(self.conn)],
+            [db.ACTIVE_ACCOUNT_MIN_ID],
+        )
+
+    def test_active_pool_includes_accounts_at_and_above_minimum_id(self):
+        active_above = db.ACTIVE_ACCOUNT_MIN_ID + 1
+        used_account = db.ACTIVE_ACCOUNT_MIN_ID
+
+        db.upsert_account(
+            self.conn,
+            {
+                "id": used_account,
+                "email": "test+33@gmail.com",
+                "first_name": "Active",
+                "last_name": "Account",
+                "status": "verified",
+            },
+        )
+        db.upsert_account(
+            self.conn,
+            {
+                "id": active_above,
+                "email": "test+34@gmail.com",
+                "first_name": "Eligible",
+                "last_name": "Account",
+                "status": "verified",
+                "check_promotions": True,
+            },
+        )
+        db.mark_promo(
+            self.conn,
+            used_account,
+            name="Old Offer",
+            status="active",
+            expiry="Expires in 1 day",
+            used=True,
+            count=1,
+        )
+
+        self.assertEqual(db.count_active(self.conn), 1)
+        self.assertEqual(
+            [row["id"] for row in db.get_promo_accounts(self.conn)],
+            [active_above],
+        )
+        self.assertEqual(
+            [row["id"] for row in db.get_accounts(self.conn)],
+            [used_account, active_above],
+        )
 
     def test_duplicate_email_raises(self):
         row_one = {

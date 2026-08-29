@@ -10,6 +10,14 @@ accounts for Hut Rewards limited-time offers.
 
 ---
 
+## Disclaimer
+
+This project is an automation tool for personal testing. Account creation and
+promotion checking can break whenever Pizza Hut changes its site. Use at your
+own risk.
+
+---
+
 ## Features
 
 - Creates Pizza Hut Canada accounts from one Gmail base address.
@@ -474,9 +482,3 @@ python PizzaBot.py check-promos --ids 33 --timeout 180
 ```
 
 ---
-
-## Disclaimer
-
-This project is an automation tool for personal testing. Account creation and
-promotion checking can break whenever Pizza Hut changes its site. Use at your
-own risk.

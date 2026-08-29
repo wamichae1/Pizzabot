@@ -46,7 +46,7 @@ accounts for Hut Rewards limited-time offers.
 ## Setup
 
 ```powershell
-cd C:\Users\mwang\Desktop\PROJECTS\PizzaBot
+cd PizzaBot
 
 pip install -r requirements.txt
 python -m playwright install chromium
@@ -365,11 +365,11 @@ python PizzaBot.py promos --ids 33,34
 Example output:
 
 ```text
-Promos for pypizzabot+33@gmail.com:
+Promos for youraccount+33@gmail.com:
   Welcome to Hut Rewards: Free Regular Breadsticks
     Expires in 29 days!
 
-Promos for pypizzabot+34@gmail.com:
+Promos for youraccount+34@gmail.com:
   Welcome to Hut Rewards: Free Regular Breadsticks
     Expires in 29 days!
 ```

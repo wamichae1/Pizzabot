@@ -89,7 +89,7 @@ class TestStatsDashboard(unittest.TestCase):
             conn,
             {
                 "id": account_id,
-                "email": "pypizzabot+7@gmail.com",
+                "email": "youraccount+7@gmail.com",
                 "first_name": "First",
                 "last_name": "Last",
                 "status": "verified",
@@ -118,7 +118,7 @@ class TestStatsDashboard(unittest.TestCase):
         self.assertIn("Total: 1 | Active: 1 | Verified: 1", text)
         self.assertIn("EMAIL", text)
         self.assertIn("LAST ACTION", text)
-        self.assertIn("pypizzabot+7@gmail.com", text)
+        self.assertIn("youraccount+7@gmail.com", text)
         self.assertIn("Promo checked", text)
 
     def test_stats_renders_stored_birthday_as_mm_dd(self):
@@ -128,7 +128,7 @@ class TestStatsDashboard(unittest.TestCase):
             conn,
             {
                 "id": account_id,
-                "email": "pypizzabot+33@gmail.com",
+                "email": "youraccount+33@gmail.com",
                 "first_name": "First",
                 "last_name": "Last",
                 "birthday": "2026-09-07",

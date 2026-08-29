@@ -2,10 +2,10 @@
   "target_account_pool": 3,
   "promo_check_frequency_days": 1,
   "base_profile": {
-    "first_name": "Jordan",
+    "first_name": "John",
     "last_name": "Smith",
     "birthday": "next_month:1-10",
-    "area_code": "905",
+    "area_code": "123",
     "phone": "",
     "base_email": "youraccount@gmail.com"
   },

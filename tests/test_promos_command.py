@@ -40,7 +40,7 @@ class TestPromosCommand(unittest.TestCase):
 
     def test_prints_multiple_stored_promos_for_selected_ids(self):
         account_id = db.ACTIVE_ACCOUNT_MIN_ID
-        self._add_account(account_id, "pypizzabot+33@gmail.com")
+        self._add_account(account_id, "youraccount+33@gmail.com")
         db.mark_promo(
             self.conn,
             account_id,
@@ -63,25 +63,25 @@ class TestPromosCommand(unittest.TestCase):
 
         text = self._run("33")
 
-        self.assertIn("Promos for pypizzabot+33@gmail.com:", text)
+        self.assertIn("Promos for youraccount+33@gmail.com:", text)
         self.assertIn("  Offer One\n    Expires in 2 days!", text)
         self.assertIn("  Offer Two\n    Expiring in 5 days!", text)
         self.assertNotIn("No stored promos.", text)
 
     def test_prints_clear_message_when_account_has_no_stored_promos(self):
         account_id = db.ACTIVE_ACCOUNT_MIN_ID
-        self._add_account(account_id, "pypizzabot+33@gmail.com")
+        self._add_account(account_id, "youraccount+33@gmail.com")
 
         text = self._run("33")
 
-        self.assertIn("Promos for pypizzabot+33@gmail.com:", text)
+        self.assertIn("Promos for youraccount+33@gmail.com:", text)
         self.assertIn("No stored promos.", text)
 
     def test_defaults_to_all_active_pool_accounts(self):
         first_id = db.ACTIVE_ACCOUNT_MIN_ID
         second_id = db.ACTIVE_ACCOUNT_MIN_ID + 1
-        self._add_account(first_id, "pypizzabot+33@gmail.com")
-        self._add_account(second_id, "pypizzabot+34@gmail.com")
+        self._add_account(first_id, "youraccount+33@gmail.com")
+        self._add_account(second_id, "youraccount+34@gmail.com")
         db.mark_promo(
             self.conn,
             first_id,
@@ -91,9 +91,9 @@ class TestPromosCommand(unittest.TestCase):
 
         text = self._run()
 
-        self.assertIn("Promos for pypizzabot+33@gmail.com:", text)
+        self.assertIn("Promos for youraccount+33@gmail.com:", text)
         self.assertIn("  Offer A\n    Expires in 3 days!", text)
-        self.assertIn("Promos for pypizzabot+34@gmail.com:", text)
+        self.assertIn("Promos for youraccount+34@gmail.com:", text)
         self.assertIn("No stored promos.", text)
 
     def test_excludes_accounts_below_active_pool_minimum(self):

@@ -14,7 +14,7 @@ accounts for Hut Rewards limited-time offers.
 
 This project is an automation tool for personal testing. Account creation and
 promotion checking can break whenever Pizza Hut changes its site. Use at your
-own risk.
+own risk. The automation tool also isn't perfect. It may not have the desired results everytime.
 
 ---
 

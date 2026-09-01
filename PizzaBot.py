@@ -6,6 +6,7 @@ Commands:
   create        Top up the active account pool with new +n email accounts.
   verify        Read Pizza Hut email links from IMAP and click them.
   check-promos  Log into verified accounts and record active Hut Rewards offers.
+  open-account  Submit one account's email login without running any further flow.
   run           Run create -> verify -> check-promos (optionally on a loop).
   stats         Print a summary of the SQLite account pool.
 """
@@ -46,6 +47,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p_promos.add_argument("--ids", default="", help="Comma-separated account ids; default all promo-enabled accounts.")
     p_promos.add_argument("--timeout", type=int, default=180, help="Seconds to wait for each email link.")
     p_promos.add_argument("--headless", action="store_true", help="Run browser headless.")
+
+    p_open = sub.add_parser("open-account", help="Open one account for manual inspection.")
+    p_open.add_argument("--id", type=int, required=True, help="Account id to open.")
+    p_open.add_argument("--timeout", type=int, default=180, help="Seconds to wait for the login email link.")
+    p_open.add_argument("--headless", action="store_true", help="Run browser headless.")
 
     p_run = sub.add_parser("run", help="Create, verify, and check promotions.")
     p_run.add_argument("--count", type=int, default=None, help="Override the number to create this run.")
@@ -392,6 +398,84 @@ def cmd_check_promos(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_open_account(args: argparse.Namespace) -> int:
+    from pizzabot.browser import BrowserSession
+    from pizzabot import pizzahut
+
+    cfg = config_mod.load_config(args.config)
+    imap = config_mod.require_imap_config(cfg)
+    conn = db_mod.connect(args.db)
+
+    # Use the same active-pool filter as every other account operation. Rows
+    # below ACTIVE_ACCOUNT_MIN_ID are intentionally invisible to automated
+    # flows, so an explicit --id lower than the minimum is not allowed here.
+    account = None
+    for row in db_mod.get_accounts(conn):
+        if row["id"] == args.id:
+            account = row
+            break
+    conn.close()
+
+    if account is None:
+        if args.id < db_mod.ACTIVE_ACCOUNT_MIN_ID:
+            print(
+                f"Account ID {args.id} is outside the active account pool "
+                f"(minimum ID {db_mod.ACTIVE_ACCOUNT_MIN_ID})."
+            )
+        else:
+            print(f"No active-pool account with ID {args.id}.")
+        return 0
+
+    selectors = cfg.get("selectors", {})
+    browser_opts = _browser_config(cfg, args.headless)
+    # This diagnostic command intentionally does not use a context manager or
+    # close the session at the end: the browser should remain available for
+    # manual inspection.
+    session = BrowserSession(**browser_opts)
+
+    email = account["email"]
+    print(f"Opening login for {email} ...")
+    pizzahut.login_with_email(
+        session, email, selectors, flow="promo", stage="login"
+    )
+
+    print("Waiting for Pizza Hut login email ...")
+    link = pizzahut.wait_for_verification_email(
+        imap,
+        email,
+        timeout_seconds=args.timeout,
+    )
+    if link is None:
+        print("No Pizza Hut login email received; leaving the browser open for inspection.")
+        print("Press Enter to close the browser...")
+        input()
+        session.close()
+        return 0
+
+    pizzahut.open_verification_login_link(session, link, selectors)
+
+    # Match check-promos' first post-login wait: a valid login link eventually
+    # lands on /order/deals. Keep this diagnostic non-fatal so it still prints
+    # whatever URL the account actually reaches when authentication fails.
+    try:
+        pizzahut._wait_for_url_contains(
+            session.page,
+            "/order/deals",
+            "promo",
+            "deals_page",
+            "open account verification link",
+            timeout_seconds=8,
+        )
+    except pizzahut.PizzahutError:
+        pass
+
+    print(session.page.url)
+    print("Press Enter to close the browser...")
+    input()
+    session.close()
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     while True:
         cmd_create(args)
@@ -512,6 +596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "create": cmd_create,
         "verify": cmd_verify,
         "check-promos": cmd_check_promos,
+        "open-account": cmd_open_account,
         "run": cmd_run,
         "stats": cmd_stats,
         "promos": cmd_promos,

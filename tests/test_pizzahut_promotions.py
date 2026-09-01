@@ -267,6 +267,28 @@ class TestWaitForUrlContains(unittest.TestCase):
             )
 
 
+class TestIsPromotionRootPage(unittest.TestCase):
+    def test_root_urls(self):
+        page = FakePage("https://www.pizzahut.ca/")
+        self.assertTrue(pizzahut._is_promotion_root_page(page))
+
+        page = FakePage("https://www.pizzahut.ca")
+        self.assertTrue(pizzahut._is_promotion_root_page(page))
+
+    def test_non_root_urls(self):
+        page = FakePage("https://www.pizzahut.ca/order/deals")
+        self.assertFalse(pizzahut._is_promotion_root_page(page))
+
+        page = FakePage("https://www.pizzahut.ca/login")
+        self.assertFalse(pizzahut._is_promotion_root_page(page))
+
+        page = FakePage("https://www.pizzahut.ca/complete-profile")
+        self.assertFalse(pizzahut._is_promotion_root_page(page))
+
+        page = FakePage("https://www.pizzahut.ca/?query=1")
+        self.assertFalse(pizzahut._is_promotion_root_page(page))
+
+
 class TestNavigateToHutRewards(unittest.TestCase):
     def test_success_path_reports_stages_and_checks_urls(self):
         profile_control = Mock()
@@ -296,9 +318,44 @@ class TestNavigateToHutRewards(unittest.TestCase):
         )
         profile_control.hover.assert_called_once()
         profile_control.click.assert_called_once()
-        rewards_control.click.assert_called_once()
 
         expected_parts = ["/order/deals", "/my-account/details", "/rewards"]
+        rewards_control.click.assert_called_once()
+        actual_parts = [call.args[1] for call in wait_for_url.call_args_list]
+        self.assertEqual(actual_parts, expected_parts)
+
+
+    def test_root_start_continues_same_rewards_flow(self):
+        profile_control = Mock()
+        rewards_control = Mock()
+        wait_for_url = Mock()
+        session = Mock()
+        session.page = FakePage("https://www.pizzahut.ca/")
+        selectors = {}
+        stages = []
+
+        with patch.object(pizzahut, "accept_cookies"), \
+             patch.object(pizzahut, "_wait_for_url_contains", wait_for_url), \
+             patch.object(pizzahut, "_close_requested_time_modal") as close_modal, \
+             patch.object(pizzahut, "_wait_for_view_profile", return_value=profile_control), \
+             patch.object(pizzahut, "_wait_for_hut_rewards_option", return_value=rewards_control), \
+             patch.object(pizzahut, "_wait_for_hut_rewards_content"):
+            pizzahut.navigate_to_hut_rewards(
+                session,
+                selectors,
+                report_stage=stages.append,
+            )
+
+        close_modal.assert_called_once_with(session.page)
+        self.assertEqual(
+            stages,
+            ["deals_page", "account_page", "rewards_page", "rewards_loaded"],
+        )
+        profile_control.hover.assert_called_once()
+        profile_control.click.assert_called_once()
+        rewards_control.click.assert_called_once()
+
+        expected_parts = ["/my-account/details", "/rewards"]
         actual_parts = [call.args[1] for call in wait_for_url.call_args_list]
         self.assertEqual(actual_parts, expected_parts)
 
@@ -618,10 +675,10 @@ class TestExtractLimitedTimeOffers(unittest.TestCase):
 class TestNavigateToHutRewardsErrorPaths(unittest.TestCase):
     """Error-path tests for the promotion navigation flow."""
 
-    def test_lands_at_root_raises_deals_page_error(self):
-        """Login link landing at '/' instead of /order/deals raises [promo/deals_page]."""
+    def test_unsupported_start_url_raises_deals_page_error(self):
+        """Login link landing at an unsupported URL raises [promo/deals_page]."""
         session = Mock()
-        session.page = FakeUrlOnlyPage("https://www.pizzahut.ca/")
+        session.page = FakeUrlOnlyPage("https://www.pizzahut.ca/login")
         with patch.object(pizzahut, "accept_cookies"):
             with self.assertRaises(pizzahut.PizzahutError) as cm:
                 pizzahut.navigate_to_hut_rewards(
@@ -629,7 +686,7 @@ class TestNavigateToHutRewardsErrorPaths(unittest.TestCase):
                 )
         msg = str(cm.exception)
         self.assertIn("[promo/deals_page]", msg)
-        self.assertIn("https://www.pizzahut.ca/", msg)
+        self.assertIn("https://www.pizzahut.ca/login", msg)
 
     def test_view_profile_unavailable_raises_account_page_error(self):
         """View Profile icon not rendered raises [promo/account_page] with current URL."""

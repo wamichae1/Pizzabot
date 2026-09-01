@@ -918,6 +918,12 @@ def _wait_for_hut_rewards_content(page, flow: str, stage: str, timeout_seconds: 
     )
 
 
+def _is_promotion_root_page(page) -> bool:
+    """Return True if the page is currently at the Pizza Hut root URL."""
+    url = getattr(page, "url", "")
+    return url in ("https://www.pizzahut.ca", "https://www.pizzahut.ca/")
+
+
 def navigate_to_hut_rewards(
     session: BrowserSession,
     selectors: dict[str, Any] | None = None,
@@ -929,17 +935,18 @@ def navigate_to_hut_rewards(
 
     accept_cookies(session, selectors)
 
-    # The login link should land on /order/deals. Give the SPA a moment to
-    # redirect, but do NOT auto-navigate if it lands somewhere else: that
-    # would mask an authentication/navigation failure.
-    _wait_for_url_contains(
-        page,
-        "/order/deals",
-        flow,
-        "deals_page",
-        "verification login link",
-        timeout_seconds=8,
-    )
+    # The login link usually lands on /order/deals, but accounts without a
+    # selected carryout location can land directly on https://www.pizzahut.ca/.
+    # Both locations lead to the same Hut Rewards flow.
+    if not _is_promotion_root_page(page):
+        _wait_for_url_contains(
+            page,
+            "/order/deals",
+            flow,
+            "deals_page",
+            "verification login link",
+            timeout_seconds=8,
+        )
     if report_stage:
         report_stage("deals_page")
 
